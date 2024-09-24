@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Inventory Chart</title>
+</head>
+<body>
+    <h1>Inventory Chart</h1>
+    <!-- グラフの表示 -->
+    <img src="data:image/png;base64,{{ graph_url }}" alt="Inventory Chart">
+
+    <h2>Click on a product to view its inventory history</h2>
+    <ul>
+        <!-- 商品リストのリンクを表示 -->
+        {% for product in product_names %}
+            <li><a href="{{ url_for('inventory_history', product_name=product) }}">{{ product }}</a></li>
+        {% endfor %}
+    </ul>
+</body>
+</html>
+
