@@ -2,6 +2,8 @@ from flask import Flask, request, redirect, url_for, send_from_directory, render
 import sqlite3
 import os
 from werkzeug.utils import secure_filename
+import matplotlib
+matplotlib.use('Agg')  # GUIを使わないバックエンドを使用
 import matplotlib.pyplot as plt
 import io
 import base64
@@ -41,14 +43,14 @@ def init_db():
 
     # Inventory テーブルの作成
     c.execute('''
-    CREATE TABLE IF NOT EXISTS inventory (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        product_name TEXT NOT NULL,
-        lot_number TEXT NOT NULL,
+    CREATE TABLE IF NOT EXISTS ingredients (
+        ingredient_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        recipe_id INTEGER NOT NULL,
+        ingredient_name TEXT NOT NULL,
         quantity INTEGER NOT NULL,
-        unit TEXT NOT NULL,
-        received_date TEXT NOT NULL
+        unit TEXT NOT NULL
     )''')
+
 
     # `receipt_file` カラムがない場合に追加
     c.execute('''PRAGMA table_info(inventory)''')
@@ -60,7 +62,9 @@ def init_db():
     c.execute('''
     CREATE TABLE IF NOT EXISTS recipes (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        drink_name TEXT NOT NULL
+        drink_name TEXT NOT NULL,
+        unit TEXT NOT NULL, 
+        ingredient_id INTEGER
     )''')
 
     # Ingredients テーブルの作成
@@ -103,7 +107,7 @@ init_db()
 @app.route('/', methods=['GET', 'POST'])
 def home():
     database_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'inventory.db')
-    print("Database path:", database_path)  # デバッグ用
+    print("Database path:", database_path)  # Debug
     conn = sqlite3.connect('inventory.db')
     c = conn.cursor()
 
@@ -120,30 +124,32 @@ def home():
 
     inventory = c.fetchall()
 
+    c.execute("SELECT id, drink_name FROM recipes")
+    recipes = c.fetchall()
+    recipe_links = ''
+    for recipe in recipes:
+        recipe_links += f'<a href="/manufacture/{recipe[0]}">Manufacture {recipe[1]}</a><br>'
 
 
-    # 最新5件の履歴を取得
+
+    # Get the latest 5 entries from history
     c.execute("SELECT * FROM history ORDER BY timestamp DESC LIMIT 5")
     history = c.fetchall()
-    print(history)  # デバッグ用に履歴の内容を出力
-
-    history_list = ''
-    for entry in history:
-        # 'timestamp'から日付のみを取り出す（YYYY-MM-DD形式）
-        timestamp = entry[3][:10]
-        history_list += f'<p>{entry[1]}: {entry[2]} on {timestamp}</p>'
 
     conn.close()
 
+    # Generate inventory list
     inventory_list = ''
     for item in inventory:
         inventory_list += f'<p>{item[1]} (Lot: {item[2]}), Quantity: {item[3]} {item[4]}, Received Date: {item[5]} <a href="/edit/{item[0]}">Edit</a></p>'
         inventory_list += f'<form action="/delete/{item[0]}" method="post" style="display:inline;"><button type="submit">Delete</button></form>'
 
+    # Generate history list
     history_list = ''
     for entry in history:
         history_list += f'<p>{entry[1]}: {entry[2]} at {entry[3]}</p>'
 
+    # Return the final HTML
     return f'''
         <h1>Shroomworks Inventory System</h1>
         <form method="post">
@@ -151,21 +157,29 @@ def home():
             <input type="submit" value="Search">
         </form>
         {inventory_list}
+
+        <h2>Inventory Management</h2>
         <a href="/add">Add Inventory</a><br>
-        <a href="/manufacture/{{ recipe_id }}">Manufacture Products</a>
         <a href="/inventory_chart">View Inventory Chart</a><br>
-        <a href="/view_recipes">Manage Recipes</a><br>
+    
         
+        <h2>Manufacture Options</h2>
+        {recipe_links} <!-- 各レシピの製造リンクを表示 -->
+        <a href="/view_recipes">Manage Recipes</a><br>
+
         <h2>History</h2>
         {history_list}
         <a href="/more_history">More History</a>
         
-        <!-- CSVエクスポートのボタンを追加 -->
+        
+
+        <!-- Export buttons for CSV -->
         <h2>Export Data</h2>
         <a href="/export_inventory"><button>Export Inventory to CSV</button></a><br>
         <a href="/export_recipes"><button>Export Recipes to CSV</button></a><br>
-
     '''
+
+
 
 @app.route('/add', methods=['GET', 'POST'])
 def add_inventory():
@@ -217,6 +231,7 @@ def add_inventory():
                 <option value="kg">kg</option>
                 <option value="ml">ml</option>
                 <option value="L">L</option>
+                <option value="gal">L</option>
                 <option value="lbs_oz">Lbs & Oz</option>
             </select><br>
             
@@ -341,6 +356,7 @@ def edit_inventory(id):
                 <option value="kg" {"selected" if unit == "kg" else ""}>kg</option>
                 <option value="ml" {"selected" if unit == "ml" else ""}>ml</option>
                 <option value="L" {"selected" if unit == "L" else ""}>L</option>
+                <option value="L" {"selected" if unit == "gal" else ""}>L</option>
                 <option value="lbs_oz" {"selected" if unit == "lbs_oz" else ""}>Lbs & Oz</option>
             </select><br>
 
@@ -545,6 +561,7 @@ def add_recipe():
                         <option value="kg">kg</option>
                         <option value="ml">ml</option>
                         <option value="L">L</option>
+                        <option value="gal">L</option>
                         <option value="lbs_oz">Lbs & Oz</option>
                     </select><br>
 
@@ -581,7 +598,7 @@ def add_recipe():
                         <option value="kg">kg</option>
                         <option value="ml">ml</option>
                         <option value="L">L</option>
-                        <option value="oz">oz</option>
+                        <option value="gal">oz</option>
                         <option value="lbs">lbs</option>
                         <option value="lbs_oz">Lbs & Oz</option>
                     </select><br>
@@ -663,7 +680,7 @@ def edit_recipe(recipe_id):
                 <option value="kg" {"selected" if unit == "kg" else ""}>kg</option>
                 <option value="ml" {"selected" if unit == "ml" else ""}>ml</option>
                 <option value="L" {"selected" if unit == "L" else ""}>L</option>
-                <option value="oz" {"selected" if unit == "oz" else ""}>oz</option>
+                <option value="oz" {"selected" if unit == "gal" else ""}>oz</option>
                 <option value="lbs" {"selected" if unit == "lbs" else ""}>lbs</option>
                 <option value="lbs_oz" {"selected" if unit == "lbs_oz" else ""}>Lbs & Oz</option>
             </select><br>
@@ -704,23 +721,23 @@ def edit_recipe(recipe_id):
             // Add Ingredientの関数（JavaScriptでnewIndexを動的に生成）
             function addIngredient() {{
                 const container = document.getElementById('ingredientContainer');
-                const newIndex = container.querySelectorAll('input[name="ingredient_name"]').length;  // 正確にインデックスを生成
+                const newIndex = container.children.length + 1;
 
                 const newIngredient = `
                     <div>
-                        Ingredient ${newIndex + 1}: <input type="text" name="ingredient_name"><br>
+                        Ingredient ${newIndex}: <input type="text" name="ingredient_name"><br>
                         Quantity: <input type="text" name="quantity"><br>
                         Unit: 
-                        <select name="unit" onchange="toggleLbsOzFields(${newIndex + 1})">
+                        <select name="unit" id="unitSelect_${newIndex}" onchange="toggleLbsOzFields(${newIndex})">
                             <option value="g">g</option>
                             <option value="kg">kg</option>
                             <option value="ml">ml</option>
                             <option value="L">L</option>
-                            <option value="oz">oz</option>
+                            <option value="gal">oz</option>
                             <option value="lbs">lbs</option>
                             <option value="lbs_oz">Lbs & Oz</option>
                         </select><br>
-                        <div id="lbsOzFields_${newIndex + 1}" style="display: none;">
+                        <div id="lbsOzFields_${newIndex}" style="display: none;">
                             Lbs: <input type="text" name="quantity_lbs"> 
                             Oz: <input type="text" name="quantity_oz"><br>
                         </div>
@@ -824,59 +841,86 @@ import os
 
 
 @app.route('/manufacture/<int:recipe_id>', methods=['GET', 'POST'])
-def manufacture(recipe_id):  # recipe_idを受け取るように修正
+def manufacture(recipe_id):  # Update to accept recipe_id
     conn = sqlite3.connect('inventory.db')
     c = conn.cursor()
 
-    # 選択したレシピに基づいて原材料を取得
+    # Get recipe name for the specified recipe_id
+    print(f"Debug: recipe_id received is {recipe_id}", flush=True)  # 1. recipe_idの確認
+    c.execute("SELECT drink_name FROM recipes WHERE id=?", (recipe_id,))
+    recipe = c.fetchone()
+    
+    if not recipe:
+        conn.close()
+        print("Debug: Recipe not found", flush=True)
+        return "Recipe not found", 404
+
+    drink_name = recipe[0]
+    print(f"Debug: Drink name found is {drink_name}", flush=True)
+
+    # Get ingredients for the selected recipe
     c.execute("SELECT ingredient_name, quantity FROM ingredients WHERE recipe_id=?", (recipe_id,))
     ingredients = c.fetchall()
+    print(f"Debug: Ingredients for {drink_name} are {ingredients}", flush=True)
 
     if request.method == 'POST':
-        drink_name = request.form['drink_name']
+        print("Debug: POST request received", flush=True) 
         manufacture_date = request.form['manufacture_date']
         expiration_date = request.form['expiration_date']
-        lot_numbers = request.form.getlist('lot_number')  # 各原材料のLOT番号を取得
-        quantities = request.form.getlist('quantity')     # 各原材料の使用量を取得
+        lot_numbers = request.form.getlist('lot_number')  # Get lot numbers for each ingredient
+        quantities = request.form.getlist('quantity')     # Get used quantities for each ingredient
+        print(f"Debug: Lot numbers received: {lot_numbers}", flush=True)  # 5. LOT番号の確認
+        print(f"Debug: Quantities received: {quantities}", flush=True)
 
-        # 原材料ごとの在庫を更新する処理
-        for i, (ingredient_name, recipe_quantity) in enumerate(ingredients):
-            lot_number = lot_numbers[i]
-            used_quantity = float(quantities[i])  # 使用量をfloat型に変換
-            # 在庫から減らす処理
-            c.execute("UPDATE inventory SET quantity = quantity - ? WHERE product_name = ? AND lot_number = ?", 
-                      (used_quantity, ingredient_name, lot_number))
 
-        # 製造履歴を追加
-        c.execute("INSERT INTO manufactures (drink_name, manufacture_date, expiration_date) VALUES (?, ?, ?)",
-                  (drink_name, manufacture_date, expiration_date))
-        
-        # History に記録を追加
-        action_details = f"Manufactured {used_quantity} of {drink_name} on {manufacture_date}, Expiry: {expiration_date}"
+        # Update inventory for each ingredient
+        try:
+            for i, (ingredient_name, recipe_quantity) in enumerate(ingredients):
+                lot_number = lot_numbers[i]
+                used_quantity = float(quantities[i])  # 使用量をfloatに変換
+                print(f"Debug: Updating inventory for ingredient: {ingredient_name}, LOT: {lot_number}, Used Quantity: {used_quantity}", flush=True)  # 7. 在庫の更新詳細を確認
+
+                # 在庫から減らす処理
+                c.execute("UPDATE inventory SET quantity = quantity - ? WHERE product_name = ? AND lot_number = ?", 
+                          (used_quantity, ingredient_name, lot_number))
+        except Exception as e:
+            print(f"Error during inventory update: {e}", flush=True)  
+
+
+
+
+        # Add manufacturing record
+        c.execute("INSERT INTO manufactures (drink_name, manufacture_date, expiration_date, quantity, unit) VALUES (?, ?, ?, ?, ?)",
+          (drink_name, manufacture_date, expiration_date, sum(map(float, quantities)), "units"))
+        print("Debug: Manufacture record added to database", flush=True)
+
+        # Add to history
+        action_details = f"Manufactured {sum(map(float, quantities))} of {drink_name} on {manufacture_date}, Expiry: {expiration_date}"
         c.execute("INSERT INTO history (action_type, details, timestamp) VALUES (?, ?, datetime('now'))",
                   ('Manufacture', action_details))
+        print("Debug: Manufacture action added to history", flush=True)
+
 
         conn.commit()
         conn.close()
 
         return redirect(url_for('home'))
 
-    
-
-    # 原材料ごとにLOT番号と使用量を入力するフォームを生成
+    # Generate form fields for each ingredient
     ingredient_fields = ''
     for i, (ingredient_name, recipe_quantity) in enumerate(ingredients):
         ingredient_fields += f'''
-            <p>原材料: {ingredient_name} (必要な数量: {recipe_quantity})</p>
-            LOT番号: <input type="text" name="lot_number" required><br>
-            使用数量: <input type="text" name="quantity" required><br>
+            <p>Ingredient: {ingredient_name} (Required Quantity: {recipe_quantity})</p>
+            LOT Number: <input type="text" name="lot_number" required><br>
+            Quantity Used: <input type="text" name="quantity" required><br>
         '''
+    print(f"Debug: Ingredient field for {ingredient_name} added", flush=True)
 
-    # Pythonのf文字列を使ってingredient_fieldsをフォーム内に埋め込むように修正
+    # Return manufacturing page
     return f'''
         <h1>Manufacture Products</h1>
         <form method="post">
-            Drink Name: <input type="text" name="drink_name" required><br>
+            Drink Name: <input type="text" name="drink_name" value="{drink_name}" readonly><br>
             Manufacture Date: <input type="date" name="manufacture_date" required><br>
             Expiration Date: <input type="date" name="expiration_date" required><br>
 
@@ -886,6 +930,7 @@ def manufacture(recipe_id):  # recipe_idを受け取るように修正
             <input type="submit" value="Manufacture">
         </form>
     '''
+
 
 
 
